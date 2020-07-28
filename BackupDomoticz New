@@ -1,0 +1,89 @@
+#!/bin/bash
+# Version 1.0
+# Backup script which creates a backup of my Domoticz installation inluding : 
+# - Domoticz Database
+# - Domoticz Scripts folder
+# - My RPI Scripts folder
+# - Homebridge
+# - Crontab
+# create archive of all files and then send via FTP to ie. Synology FTP server.
+
+# Setup
+DOMOTICZ_SERVER="*.*.*.*:8080"   # IP-adres:Poort van je Domoticz server
+FTP_SERVER="*.*.*.*"        # IP-adres:Poort van je FTP server, Synology NAS
+FTP_USERNAME="*****"        # Gebruikersnaam voor FTP
+FTP_PASSWORD="*****"        # Wachtwoord voor FTP
+FTP_DIRECTORY="/Backup/Domoticz"       # Locatie op je FTP voor de Backup
+
+# No need to edit below here.
+echo "Start running backup script." 
+
+TIMESTAMP=`/bin/date +%Y%m%d%H%M%S`
+
+# Create temp-directory if it does not already exists.
+TEMP_DIR="/home/pi/backup/temp"
+TEMP_DIR_UPLOAD="/home/pi/backup/upload"
+
+if [ -d $TEMP_DIR ] ; then
+    echo "- Temp-directory already exists, no need to create it." 
+else
+    echo "- Temp-directory does not exists, creating it now."
+    /bin/mkdir $TEMP_DIR
+fi
+
+if [ -d $TEMP_DIR_UPLOAD ] ; then
+    echo "- Temp-Upload-directory already exists, no need to create it." 
+else
+    echo "- Temp-Upload-directory does not exists, creating it now." 
+    /bin/mkdir $TEMP_DIR_UPLOAD
+fi
+
+# Create backup file for database.
+echo "- Creating backup file for database."
+BACKUP_DB=$TIMESTAMP"_db.db"
+BACKUP_DB_GZ=$BACKUP_DB".gz"
+/usr/bin/curl -s http://$DOMOTICZ_SERVER/backupdatabase.php > $TEMP_DIR/$BACKUP_DB
+gzip -9 $TEMP_DIR/$BACKUP_DB
+
+# Create backup file for Domoticz scripts directory.
+echo "- Creating backup file for Domoticz scripts-directory." 
+BACKUP_SCRIPTS=$TIMESTAMP"_scripts.tar.gz"
+tar -zcf $TEMP_DIR/$BACKUP_SCRIPTS /home/pi/domoticz/scripts/
+
+# Create backup file for .sh scripts directory.
+echo "- Creating backup file for scripts-directory." 
+BACKUP_SHSCRIPTS=$TIMESTAMP"_sh_scripts.tar.gz"
+tar -zcf $TEMP_DIR/$BACKUP_SHSCRIPTS /home/pi/scripts/
+
+# Create backup file for Homebridge.
+# Got this from : https://github.com/oznu/homebridge-config-ui-x/issues/616
+echo '- Creating backup file from Homebridge...' 
+access_token=`/usr/bin/curl -s -d -v http://localhost:8581/api/auth/noauth | python3 -c "import sys, json; print(json.load(sys.stdin)['access_token'])"`
+(cd $TEMP_DIR && /usr/bin/curl -s -H "Authorization: bearer $access_token" -O -J http://localhost:8581/api/backup/download)
+
+# Create backup file for crontab.
+echo "- Creating backup file for crontab."
+BACKUP_CRONTAB=$TIMESTAMP"_crontab.txt"
+crontab -l -u pi > $TEMP_DIR/$BACKUP_CRONTAB
+
+# Create one archive for complete backup
+echo "- Add all files to Backuparchive."
+BACKUP_ALL=$TIMESTAMP"_pi3_backup.tar.gz"
+tar -zcf $TEMP_DIR_UPLOAD/$BACKUP_ALL $TEMP_DIR"/"
+
+# Send backup files to FTP location.
+echo "- Sending backup files to FTP location." 
+curl -s --disable-epsv -T "{$TEMP_DIR_UPLOAD/$BACKUP_ALL}" -u "$FTP_USERNAME:$FTP_PASSWORD" "ftp://"$FTP_SERVER$FTP_DIRECTORY"/"
+
+
+# Remove temp backup file
+echo "- Removing temp files."
+sudo /bin/rm -r -f $TEMP_DIR
+sudo /bin/rm -r -f $TEMP_DIR_UPLOAD
+
+# Domoticz logging
+echo "- Writing log to Domoticz." 
+wget -q --delete-after "http://$DOMOTICZ_SERVER/json.htm?type=command&param=addlogmessage&message=Backup to FTP script finished with timestamp ID $TIMESTAMP."
+
+# Done!
+echo "Done running backup script." 
